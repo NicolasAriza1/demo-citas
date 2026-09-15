@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reserva de Citas — Cliente</title>
+<!-- ==========================================================================
+CLIENTE (el "consumidor" del estilo Cliente-Servidor)
+-----------------------------------------------------------------------------
+Este archivo ES la aplicación cliente. Fíjense en lo que NO tiene:
+  - No tiene reglas de negocio (no valida fechas pasadas ni choques de agenda).
+  - No tiene acceso a la base de datos (no conoce a Supabase).
+Solo hace dos cosas: MOSTRAR datos y ENVIAR peticiones al servidor por HTTP.
+Todo el trabajo pesado lo hace el servidor. Por eso este cliente puede correr
+en cualquier dispositivo: un portátil, un celular, una tablet.
+=========================================================================== -->
+<style>
+  /* Estilos mínimos, colores del curso (azul y verde) */
+  body { font-family: system-ui, sans-serif; margin: 0; background: #F2F7FD; color: #2E3440; }
+  header { background: #0F4C9C; color: white; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  header p { margin: 4px 0 0; font-size: .85rem; color: #C7D8F0; }
+  main { max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  section { background: white; border: 1px solid #C9DBF0; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; }
+  h2 { color: #0F4C9C; font-size: 1.05rem; margin-top: 0; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; font-size: .9rem; }
+  input, select { width: 100%; padding: 8px; border: 1px solid #C9DBF0; border-radius: 6px; box-sizing: border-box; }
+  button { margin-top: 14px; background: #1F8A4C; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+  button.secundario { background: #0F4C9C; }
+  #mensaje { margin-top: 12px; padding: 10px; border-radius: 6px; display: none; font-size: .92rem; }
+  #mensaje.ok { display: block; background: #EFF8F2; border: 1px solid #C4E2CF; color: #1F8A4C; }
+  #mensaje.error { display: block; background: #FCF1EF; border: 1px solid #EFC9C2; color: #A93226; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #E5EDF7; }
+  th { color: #0F4C9C; }
+  #estado-servidor { font-size: .8rem; color: #5A6472; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Reserva de Citas</h1>
+  <p>Aplicación CLIENTE — todo el trabajo lo hace el servidor</p>
+</header>
+
+<main>
+  <section>
+    <h2>Nueva cita</h2>
+    <label for="paciente">Nombre del paciente</label>
+    <input id="paciente" type="text" placeholder="Ej: Ana Gómez">
+
+    <label for="profesional">Profesional</label>
+    <select id="profesional"></select>
+
+    <label for="fecha">Fecha y hora</label>
+    <input id="fecha" type="datetime-local">
+
+    <button onclick="crearCita()">Reservar</button>
+    <div id="mensaje"></div>
+  </section>
+
+  <section>
+    <h2>Citas registradas (las mismas para TODOS los clientes)</h2>
+    <button class="secundario" onclick="cargarCitas()">Actualizar lista</button>
+    <table>
+      <thead><tr><th>Paciente</th><th>Profesional</th><th>Fecha y hora</th></tr></thead>
+      <tbody id="tabla-citas"></tbody>
+    </table>
+  </section>
+
+  <p id="estado-servidor">Consultando servidor…</p>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// DIRECCIÓN DEL SERVIDOR
+// Si este archivo se sirve desde el propio servidor (lo normal en la demo),
+// una cadena vacía "" significa "el mismo lugar de donde vine".
+// Para demostrar que cliente y servidor son aplicaciones INDEPENDIENTES,
+// puede abrir este archivo directamente desde su computador (doble clic) y
+// poner aquí la URL de Render, por ejemplo:
+//   const SERVIDOR = "https://demo-citas-XXXX.onrender.com";
+// ---------------------------------------------------------------------------
+const SERVIDOR = "";
+
+// --- Pedir la lista de profesionales al servidor (petición GET por HTTP) ---
+async function cargarProfesionales() {
+  // fetch() abre una conexión de red hacia el servidor y espera su respuesta.
+  const respuesta = await fetch(SERVIDOR + "/api/profesionales");
+  const profesionales = await respuesta.json(); // el servidor responde JSON
+  const select = document.getElementById("profesional");
+  select.innerHTML = profesionales
+    .map(p => `<option value="${p.id}">${p.nombre} — ${p.especialidad}</option>`)
+    .join("");
+}
+
+// --- Pedir la lista de citas al servidor (petición GET por HTTP) -----------
+async function cargarCitas() {
+  const respuesta = await fetch(SERVIDOR + "/api/citas");
+  const citas = await respuesta.json();
+  const tabla = document.getElementById("tabla-citas");
+  // El cliente SOLO pinta lo que el servidor le entregó. No decide nada.
+  tabla.innerHTML = citas
+    .map(c => `<tr><td>${c.paciente}</td><td>${c.profesional}</td>
+               <td>${new Date(c.fecha_hora).toLocaleString("es-CO")}</td></tr>`)
+    .join("");
+}
+
+// --- Enviar una nueva cita al servidor (petición POST por HTTP) -------------
+async function crearCita() {
+  // El campo datetime-local NO incluye zona horaria. La convertimos aquí a un
+  // instante universal (formato ISO, en UTC) antes de enviarla: así el
+  // servidor y la base de datos (que corren en OTRA zona horaria, en la nube)
+  // guardan exactamente el momento que la persona eligió en su reloj local.
+  const valorFecha = document.getElementById("fecha").value;
+  const datos = {
+    paciente: document.getElementById("paciente").value,
+    profesional_id: document.getElementById("profesional").value,
+    fecha_hora: valorFecha ? new Date(valorFecha).toISOString() : "",
+  };
+
+  // Observen: el cliente NO valida las reglas. Las envía tal cual y el
+  // SERVIDOR decide si acepta o rechaza. Prueben reservar en el pasado.
+  const respuesta = await fetch(SERVIDOR + "/api/citas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datos),
+  });
+  const resultado = await respuesta.json();
+
+  const mensaje = document.getElementById("mensaje");
+if (respuesta.ok) {
+  const prof = document.getElementById("profesional");
+  mensaje.className = "ok";
+  mensaje.innerHTML = `
+    <strong>✓ Cita confirmada</strong> (código ${resultado.id})<br>
+    Paciente: ${datos.paciente}<br>
+    Profesional: ${prof.options[prof.selectedIndex].text}<br>
+    Fecha: ${new Date(datos.fecha_hora).toLocaleString("es-CO")}`;
+  document.getElementById("paciente").value = "";  // limpiar el formulario
+  document.getElementById("fecha").value = "";
+  cargarCitas();
+}else {
+    mensaje.className = "error";
+    mensaje.textContent = "El servidor la rechazó: " + resultado.error;
+  }
+}
+
+// --- Al abrir la página: verificar el servidor y cargar los datos -----------
+(async function iniciar() {
+  const estado = document.getElementById("estado-servidor");
+  try {
+    const r = await fetch(SERVIDOR + "/api/salud");
+    const s = await r.json();
+    estado.textContent = "Servidor activo · respuesta recibida a las " +
+      new Date(s.hora).toLocaleTimeString("es-CO");
+    await cargarProfesionales();
+    await cargarCitas();
+  } catch (e) {
+    // Si el servidor está caído, el cliente no sirve para nada ("todo o nada").
+    estado.textContent = "No hay conexión con el servidor. Sin él, este cliente no puede hacer nada.";
+  }
+})();
+</script>
+</body>
+</html>
