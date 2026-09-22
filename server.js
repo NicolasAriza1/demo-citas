@@ -101,21 +101,19 @@ app.post('/api/citas', async (req, res) => {
 
   try {
     // Regla 3: el profesional no puede tener dos citas a la misma hora.
-    const ocupado = await pool.query(
-      'SELECT id FROM citas WHERE profesional_id = $1 AND fecha_hora = $2',
-      [profesional_id, fecha_hora]
-    );
-    if (ocupado.rows.length > 0) {
-      return res.status(409).json({ error: 'Regla del servidor: ese profesional ya tiene una cita a esa hora' });
-    }
+   const insercion = await pool.query(
+  `INSERT INTO citas (paciente, profesional_id, fecha_hora)
+   VALUES ($1, $2, $3)
+   ON CONFLICT (profesional_id, fecha_hora) DO NOTHING
+   RETURNING id`,
+  [paciente, profesional_id, fecha_hora]
+);
 
-    // Si todas las reglas pasan, se guarda en la base de datos.
-    const insercion = await pool.query(
-      `INSERT INTO citas (paciente, profesional_id, fecha_hora)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [paciente, profesional_id, fecha_hora]
-    );
-    res.status(201).json({ mensaje: 'Cita creada', id: insercion.rows[0].id });
+if (insercion.rows.length === 0) {
+  return res.status(409).json({ error: 'Regla del servidor: ese profesional ya tiene una cita a esa hora' });
+}
+
+res.status(201).json({ mensaje: 'Cita creada', id: insercion.rows[0].id });
   } catch (error) {
     console.error('Error creando cita:', error.message);
     res.status(500).json({ error: 'No se pudo guardar en la base de datos' });
