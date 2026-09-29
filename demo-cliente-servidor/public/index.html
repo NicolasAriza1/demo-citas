@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reserva de Citas — Cliente</title>
+<!-- Cliente web de la demo: consume la API del servidor por HTTP.
+     No contiene reglas de negocio ni acceso a datos. -->
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #F2F7FD; color: #2E3440; }
+  header { background: #0F4C9C; color: white; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  header p { margin: 4px 0 0; font-size: .85rem; color: #C7D8F0; }
+  main { max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  section { background: white; border: 1px solid #C9DBF0; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; }
+  h2 { color: #0F4C9C; font-size: 1.05rem; margin-top: 0; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; font-size: .9rem; }
+  input, select { width: 100%; padding: 8px; border: 1px solid #C9DBF0; border-radius: 6px; box-sizing: border-box; }
+  button { margin-top: 14px; background: #1F8A4C; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+  button.secundario { background: #0F4C9C; }
+  #mensaje { margin-top: 12px; padding: 10px; border-radius: 6px; display: none; font-size: .92rem; }
+  #mensaje.ok { display: block; background: #EFF8F2; border: 1px solid #C4E2CF; color: #1F8A4C; }
+  #mensaje.error { display: block; background: #FCF1EF; border: 1px solid #EFC9C2; color: #A93226; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #E5EDF7; }
+  th { color: #0F4C9C; }
+  #estado-servidor { font-size: .8rem; color: #5A6472; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Reserva de Citas</h1>
+  <p>Aplicación CLIENTE — todo el trabajo lo hace el servidor</p>
+</header>
+
+<main>
+  <section>
+    <h2>Nueva cita</h2>
+    <label for="paciente">Nombre del paciente</label>
+    <input id="paciente" type="text" placeholder="Ej: Ana Gómez">
+
+    <label for="profesional">Profesional</label>
+    <select id="profesional"></select>
+
+    <label for="fecha">Fecha y hora</label>
+    <input id="fecha" type="datetime-local">
+
+    <button onclick="crearCita()">Reservar</button>
+    <div id="mensaje"></div>
+  </section>
+
+  <section>
+    <h2>Citas registradas (las mismas para TODOS los clientes)</h2>
+    <button class="secundario" onclick="cargarCitas()">Actualizar lista</button>
+    <table>
+      <thead><tr><th>Paciente</th><th>Profesional</th><th>Fecha y hora</th></tr></thead>
+      <tbody id="tabla-citas"></tbody>
+    </table>
+  </section>
+
+  <p id="estado-servidor">Consultando servidor…</p>
+</main>
+
+<script>
+// Dirección base de la API. Vacía cuando esta página se sirve desde el
+// propio servidor; con la URL completa (p. ej. la de Render) si el archivo
+// se abre de forma independiente.
+const SERVIDOR = "";
+
+async function cargarProfesionales() {
+  const respuesta = await fetch(SERVIDOR + "/api/profesionales");
+  const profesionales = await respuesta.json();
+  const select = document.getElementById("profesional");
+  select.innerHTML = profesionales
+    .map(p => `<option value="${p.id}">${p.nombre} — ${p.especialidad}</option>`)
+    .join("");
+}
+
+async function cargarCitas() {
+  const respuesta = await fetch(SERVIDOR + "/api/citas");
+  const citas = await respuesta.json();
+  const tabla = document.getElementById("tabla-citas");
+  tabla.innerHTML = citas
+    .map(c => `<tr><td>${c.paciente}</td><td>${c.profesional}</td>
+               <td>${new Date(c.fecha_hora).toLocaleString("es-CO")}</td></tr>`)
+    .join("");
+}
+
+async function crearCita() {
+  // datetime-local no incluye zona horaria: se convierte a un instante
+  // universal (ISO/UTC) para que el servidor y la base de datos, que corren
+  // en otra zona, guarden el momento elegido en el reloj local del usuario.
+  const valorFecha = document.getElementById("fecha").value;
+  const datos = {
+    paciente: document.getElementById("paciente").value,
+    profesional_id: document.getElementById("profesional").value,
+    fecha_hora: valorFecha ? new Date(valorFecha).toISOString() : "",
+  };
+
+  const respuesta = await fetch(SERVIDOR + "/api/citas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datos),
+  });
+  const resultado = await respuesta.json();
+
+  const mensaje = document.getElementById("mensaje");
+  if (respuesta.ok) {
+    mensaje.className = "ok";
+    mensaje.textContent = "El servidor aceptó la cita (id " + resultado.id + ")";
+    cargarCitas();
+  } else {
+    mensaje.className = "error";
+    mensaje.textContent = "El servidor la rechazó: " + resultado.error;
+  }
+}
+
+(async function iniciar() {
+  const estado = document.getElementById("estado-servidor");
+  try {
+    const r = await fetch(SERVIDOR + "/api/salud");
+    const s = await r.json();
+    estado.textContent = "Servidor activo · respuesta recibida a las " +
+      new Date(s.hora).toLocaleTimeString("es-CO");
+    await cargarProfesionales();
+    await cargarCitas();
+  } catch (e) {
+    estado.textContent = "No hay conexión con el servidor. Sin él, este cliente no puede hacer nada.";
+  }
+})();
+</script>
+</body>
+</html>
