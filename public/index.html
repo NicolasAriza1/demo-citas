@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reserva de Citas — Cliente</title>
+<title>Reserva de Citas — Cliente v2</title>
 <!-- ==========================================================================
-CLIENTE (el "consumidor" del estilo Cliente-Servidor)
+CLIENTE (el "consumidor" del estilo Cliente-Servidor) — VERSIÓN 2
 -----------------------------------------------------------------------------
 Este archivo ES la aplicación cliente. Fíjense en lo que NO tiene:
   - No tiene reglas de negocio (no valida fechas pasadas ni choques de agenda).
@@ -13,6 +13,18 @@ Este archivo ES la aplicación cliente. Fíjense en lo que NO tiene:
 Solo hace dos cosas: MOSTRAR datos y ENVIAR peticiones al servidor por HTTP.
 Todo el trabajo pesado lo hace el servidor. Por eso este cliente puede correr
 en cualquier dispositivo: un portátil, un celular, una tablet.
+
+MEJORAS DE LA VERSIÓN 2:
+  1. Al abrir, las 3 peticiones iniciales viajan EN PARALELO (antes: en fila).
+  2. Esqueletos animados mientras llegan los datos (la página no se ve vacía).
+  3. Al reservar, la cita aparece de inmediato como "reservando…" y el
+     servidor la confirma o la rechaza después (interfaz optimista).
+  4. Tras reservar ya no se vuelve a pedir toda la lista: un viaje menos.
+  5. Botones bloqueados con indicador mientras esperan (evita doble clic).
+  6. Aviso si el servidor tarda en despertar (arranque en frío de Render).
+  7. Medición visible de los milisegundos de cada petición y de si la
+     respuesta salió de la caché del servidor (HIT) o de la base de datos (MISS).
+  8. Muestra la versión que reporta el servidor.
 =========================================================================== -->
 <style>
   /* Estilos mínimos, colores del curso (azul y verde) */
@@ -27,19 +39,46 @@ en cualquier dispositivo: un portátil, un celular, una tablet.
   input, select { width: 100%; padding: 8px; border: 1px solid #C9DBF0; border-radius: 6px; box-sizing: border-box; }
   button { margin-top: 14px; background: #1F8A4C; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-size: 1rem; cursor: pointer; }
   button.secundario { background: #0F4C9C; }
+  button:disabled { opacity: .7; cursor: wait; }
   #mensaje { margin-top: 12px; padding: 10px; border-radius: 6px; display: none; font-size: .92rem; }
   #mensaje.ok { display: block; background: #EFF8F2; border: 1px solid #C4E2CF; color: #1F8A4C; }
   #mensaje.error { display: block; background: #FCF1EF; border: 1px solid #EFC9C2; color: #A93226; }
   table { width: 100%; border-collapse: collapse; font-size: .92rem; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #E5EDF7; }
   th { color: #0F4C9C; }
-  #estado-servidor { font-size: .8rem; color: #5A6472; }
+  #estado-servidor, #latencia { font-size: .8rem; color: #5A6472; margin: 4px 0; }
+
+  /* v2: insignia de versión e indicador de caché */
+  .version { display: inline-block; margin-left: 10px; padding: 2px 10px; border-radius: 999px;
+             background: #1F8A4C; color: white; font-size: .7rem; font-weight: 600; vertical-align: middle; }
+  .hit  { color: #1F8A4C; font-weight: 600; }
+  .miss { color: #B7791F; font-weight: 600; }
+
+  /* Indicador giratorio dentro de los botones */
+  .girando { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
+             border: 2px solid rgba(255,255,255,.5); border-top-color: white; border-radius: 50%;
+             animation: giro .7s linear infinite; }
+  @keyframes giro { to { transform: rotate(360deg); } }
+
+  /* Esqueleto: barras grises animadas mientras llegan los datos */
+  .esqueleto span { display: block; height: 12px; border-radius: 4px;
+                    background: linear-gradient(90deg, #E5EDF7 25%, #F2F7FD 50%, #E5EDF7 75%);
+                    background-size: 200% 100%; animation: brillo 1.2s infinite; }
+  @keyframes brillo { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+  /* Estados de una fila en la interfaz optimista */
+  tr { transition: opacity .4s; }
+  tr.pendiente { opacity: .55; }
+  tr.pendiente td:last-child::after { content: " · reservando…"; font-style: italic; color: #5A6472; }
+  tr.confirmada { animation: destello 1.5s; }
+  @keyframes destello { from { background: #D8F0E1; } to { background: transparent; } }
+  tr.rechazada { opacity: 0; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Reserva de Citas</h1>
+  <h1>Reserva de Citas <span class="version">v2 · con caché</span></h1>
   <p>Aplicación CLIENTE — todo el trabajo lo hace el servidor</p>
 </header>
 
@@ -50,25 +89,31 @@ en cualquier dispositivo: un portátil, un celular, una tablet.
     <input id="paciente" type="text" placeholder="Ej: Ana Gómez">
 
     <label for="profesional">Profesional</label>
-    <select id="profesional"></select>
+    <select id="profesional" disabled><option>Cargando profesionales…</option></select>
 
     <label for="fecha">Fecha y hora</label>
     <input id="fecha" type="datetime-local">
 
-    <button onclick="crearCita()">Reservar</button>
+    <button onclick="crearCita(this)">Reservar</button>
     <div id="mensaje"></div>
   </section>
 
   <section>
     <h2>Citas registradas (las mismas para TODOS los clientes)</h2>
-    <button class="secundario" onclick="cargarCitas()">Actualizar lista</button>
+    <button class="secundario" onclick="actualizarLista(this)">Actualizar lista</button>
     <table>
       <thead><tr><th>Paciente</th><th>Profesional</th><th>Fecha y hora</th></tr></thead>
-      <tbody id="tabla-citas"></tbody>
+      <tbody id="tabla-citas">
+        <!-- Esqueleto inicial: se reemplaza cuando responde el servidor -->
+        <tr class="esqueleto"><td><span></span></td><td><span></span></td><td><span></span></td></tr>
+        <tr class="esqueleto"><td><span></span></td><td><span></span></td><td><span></span></td></tr>
+        <tr class="esqueleto"><td><span></span></td><td><span></span></td><td><span></span></td></tr>
+      </tbody>
     </table>
   </section>
 
   <p id="estado-servidor">Consultando servidor…</p>
+  <p id="latencia"></p>
 </main>
 
 <script>
@@ -83,82 +128,188 @@ en cualquier dispositivo: un portátil, un celular, una tablet.
 // ---------------------------------------------------------------------------
 const SERVIDOR = "";
 
+// --- Utilidades --------------------------------------------------------------
+// Escapa texto antes de pintarlo en HTML (evita que un nombre como
+// "<script>..." se ejecute en el navegador de otros clientes).
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Hace una petición al servidor, MIDE cuánto tardó y muestra si la respuesta
+// salió de la caché del servidor (HIT) o tuvo que ir a la base de datos (MISS).
+async function pedir(ruta, opciones = {}) {
+  const inicio = performance.now();
+  const respuesta = await fetch(SERVIDOR + ruta, opciones);
+  const datos = await respuesta.json();
+  const ms = Math.round(performance.now() - inicio);
+  const cache = respuesta.headers.get("X-Cache");
+  const etiqueta = cache === "HIT"  ? ` · <span class="hit">caché HIT</span>`
+                 : cache === "MISS" ? ` · <span class="miss">caché MISS (fue a la BD)</span>`
+                 : "";
+  document.getElementById("latencia").innerHTML =
+    `Última petición: ${opciones.method || "GET"} ${ruta} · ${ms} ms${etiqueta}`;
+  return { respuesta, datos };
+}
+
+function mostrarMensaje(tipo, html) {
+  const mensaje = document.getElementById("mensaje");
+  mensaje.className = tipo;
+  mensaje.innerHTML = html;
+}
+
+// Pone un botón en modo "esperando" y devuelve una función para restaurarlo.
+function botonEsperando(boton, texto) {
+  const original = boton.textContent;
+  boton.disabled = true;
+  boton.innerHTML = `<span class="girando"></span>${texto}`;
+  return () => { boton.disabled = false; boton.textContent = original; };
+}
+
+// --- Filas de la tabla -------------------------------------------------------
+function filaCita(c, clase = "") {
+  const tr = document.createElement("tr");
+  tr.className = clase;
+  tr.dataset.fecha = c.fecha_hora; // se usa para insertar en orden
+  tr.innerHTML = `<td>${esc(c.paciente)}</td><td>${esc(c.profesional)}</td>
+                  <td>${new Date(c.fecha_hora).toLocaleString("es-CO")}</td>`;
+  return tr;
+}
+
+// Inserta una fila respetando el orden por fecha (igual que lo ordena el servidor).
+function insertarOrdenada(tr) {
+  const tbody = document.getElementById("tabla-citas");
+  const siguiente = [...tbody.rows].find(f => f.dataset.fecha > tr.dataset.fecha);
+  tbody.insertBefore(tr, siguiente || null);
+}
+
+function quitarFila(tr) {
+  if (!tr) return;
+  tr.classList.add("rechazada");          // se desvanece...
+  setTimeout(() => tr.remove(), 400);     // ...y luego desaparece
+}
+
 // --- Pedir la lista de profesionales al servidor (petición GET por HTTP) ---
 async function cargarProfesionales() {
-  // fetch() abre una conexión de red hacia el servidor y espera su respuesta.
-  const respuesta = await fetch(SERVIDOR + "/api/profesionales");
-  const profesionales = await respuesta.json(); // el servidor responde JSON
+  const { datos: profesionales } = await pedir("/api/profesionales");
   const select = document.getElementById("profesional");
   select.innerHTML = profesionales
-    .map(p => `<option value="${p.id}">${p.nombre} — ${p.especialidad}</option>`)
+    .map(p => `<option value="${p.id}" data-nombre="${esc(p.nombre)}">${esc(p.nombre)} — ${esc(p.especialidad)}</option>`)
     .join("");
+  select.disabled = false;
 }
 
 // --- Pedir la lista de citas al servidor (petición GET por HTTP) -----------
 async function cargarCitas() {
-  const respuesta = await fetch(SERVIDOR + "/api/citas");
-  const citas = await respuesta.json();
+  const { datos: citas } = await pedir("/api/citas");
   const tabla = document.getElementById("tabla-citas");
   // El cliente SOLO pinta lo que el servidor le entregó. No decide nada.
-  tabla.innerHTML = citas
-    .map(c => `<tr><td>${c.paciente}</td><td>${c.profesional}</td>
-               <td>${new Date(c.fecha_hora).toLocaleString("es-CO")}</td></tr>`)
-    .join("");
+  tabla.replaceChildren(...citas.map(c => filaCita(c)));
+}
+
+// Botón "Actualizar lista": las filas actuales se quedan visibles mientras
+// llegan las nuevas (nunca se ve la tabla vacía durante la espera).
+async function actualizarLista(boton) {
+  const restaurar = botonEsperando(boton, "Actualizando…");
+  try {
+    await cargarCitas();
+  } catch (e) {
+    mostrarMensaje("error", "No se pudo actualizar: no hay conexión con el servidor.");
+  } finally {
+    restaurar();
+  }
 }
 
 // --- Enviar una nueva cita al servidor (petición POST por HTTP) -------------
-async function crearCita() {
+async function crearCita(boton) {
   // El campo datetime-local NO incluye zona horaria. La convertimos aquí a un
   // instante universal (formato ISO, en UTC) antes de enviarla: así el
   // servidor y la base de datos (que corren en OTRA zona horaria, en la nube)
   // guardan exactamente el momento que la persona eligió en su reloj local.
   const valorFecha = document.getElementById("fecha").value;
+  const opcion = document.getElementById("profesional").selectedOptions[0];
   const datos = {
     paciente: document.getElementById("paciente").value,
     profesional_id: document.getElementById("profesional").value,
     fecha_hora: valorFecha ? new Date(valorFecha).toISOString() : "",
   };
 
-  // Observen: el cliente NO valida las reglas. Las envía tal cual y el
-  // SERVIDOR decide si acepta o rechaza. Prueben reservar en el pasado.
-  const respuesta = await fetch(SERVIDOR + "/api/citas", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(datos),
-  });
-  const resultado = await respuesta.json();
+  // INTERFAZ OPTIMISTA: pintamos la cita YA, en gris y marcada "reservando…".
+  // Ojo: esto NO es el cliente decidiendo. Es solo una vista previa; quien
+  // decide sigue siendo el servidor. Si la rechaza, la fila desaparece.
+  let fila = null;
+  if (datos.paciente && datos.fecha_hora) {
+    fila = filaCita({
+      paciente: datos.paciente,
+      profesional: opcion?.dataset.nombre || "",
+      fecha_hora: datos.fecha_hora,
+    }, "pendiente");
+    insertarOrdenada(fila);
+  }
 
-  const mensaje = document.getElementById("mensaje");
-if (respuesta.ok) {
-  const prof = document.getElementById("profesional");
-  mensaje.className = "ok";
-  mensaje.innerHTML = `
-    <strong>✓ Cita confirmada</strong> (código ${resultado.id})<br>
-    Paciente: ${datos.paciente}<br>
-    Profesional: ${prof.options[prof.selectedIndex].text}<br>
-    Fecha: ${new Date(datos.fecha_hora).toLocaleString("es-CO")}`;
-  document.getElementById("paciente").value = "";  // limpiar el formulario
-  document.getElementById("fecha").value = "";
-  cargarCitas();
-}else {
-    mensaje.className = "error";
-    mensaje.textContent = "El servidor la rechazó: " + resultado.error;
+  document.getElementById("mensaje").className = ""; // ocultar mensaje anterior
+  const restaurar = botonEsperando(boton, "Reservando…");
+
+  try {
+    // Observen: el cliente NO valida las reglas. Las envía tal cual y el
+    // SERVIDOR decide si acepta o rechaza. Prueben reservar en el pasado.
+    const { respuesta, datos: resultado } = await pedir("/api/citas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datos),
+    });
+
+    if (respuesta.ok) {
+      fila?.classList.replace("pendiente", "confirmada"); // destello verde
+      mostrarMensaje("ok", `
+        <strong>✓ Cita confirmada</strong> (código ${esc(resultado.id)})<br>
+        Paciente: ${esc(datos.paciente)}<br>
+        Profesional: ${esc(opcion?.text.trim() || "")}<br>
+        Fecha: ${new Date(datos.fecha_hora).toLocaleString("es-CO")}`);
+      document.getElementById("paciente").value = "";  // limpiar el formulario
+      document.getElementById("fecha").value = "";
+      // Ya no llamamos a cargarCitas(): la fila ya está pintada. Un viaje menos.
+    } else {
+      quitarFila(fila);
+      mostrarMensaje("error", "El servidor la rechazó: " + esc(resultado.error));
+    }
+  } catch (e) {
+    quitarFila(fila);
+    mostrarMensaje("error", "No hay conexión con el servidor. La cita no se guardó.");
+  } finally {
+    restaurar();
   }
 }
 
 // --- Al abrir la página: verificar el servidor y cargar los datos -----------
 (async function iniciar() {
   const estado = document.getElementById("estado-servidor");
+
+  // Si en 3 segundos no hay respuesta, probablemente Render está "dormido".
+  const aviso = setTimeout(() => {
+    estado.textContent = "El servidor está despertando… en el plan gratuito de " +
+      "Render el primer arranque puede tardar hasta un minuto.";
+  }, 3000);
+
   try {
-    const r = await fetch(SERVIDOR + "/api/salud");
-    const s = await r.json();
-    estado.textContent = "Servidor activo · respuesta recibida a las " +
-      new Date(s.hora).toLocaleTimeString("es-CO");
-    await cargarProfesionales();
-    await cargarCitas();
+    // Las TRES peticiones salen al mismo tiempo (en paralelo), no una tras otra.
+    // El tiempo total es el de la más lenta, no la suma de las tres.
+    const [salud] = await Promise.all([
+      pedir("/api/salud"),
+      cargarProfesionales(),
+      cargarCitas(),
+    ]);
+    // El SERVIDOR dice qué versión es: así se detecta si Render aún corre la vieja.
+    const version = salud.datos.version
+      ? `Servidor v${salud.datos.version} (con caché)`
+      : "Servidor versión anterior (sin caché)";
+    estado.textContent = `${version} · activo · respuesta recibida a las ` +
+      new Date(salud.datos.hora).toLocaleTimeString("es-CO");
   } catch (e) {
     // Si el servidor está caído, el cliente no sirve para nada ("todo o nada").
     estado.textContent = "No hay conexión con el servidor. Sin él, este cliente no puede hacer nada.";
+    document.getElementById("tabla-citas").innerHTML =
+      `<tr><td colspan="3">Sin datos: el servidor no respondió.</td></tr>`;
+  } finally {
+    clearTimeout(aviso);
   }
 })();
 </script>
